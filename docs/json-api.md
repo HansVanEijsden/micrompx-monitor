@@ -33,6 +33,11 @@ batches are silently truncated by the parser:
 GET .../json-1/list{"23185":{},"20252":{}}
 ```
 
+`micrompx-monitor` reads in batches of 8 (`--batch`) and re-reads on its own
+whatever an answer did not contain, so a truncated batch costs one extra
+request instead of a missing metric. The truncation is why the tool never
+trusts a batch response to be complete.
+
 ## Response format
 
 ```json
