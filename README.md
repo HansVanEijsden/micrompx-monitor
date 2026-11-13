@@ -131,6 +131,14 @@ Put that in a systemd timer or cron job every 15–30 seconds. See
 `integrations/prometheus/README.md` for a complete example including a
 systemd unit.
 
+### The encoder side
+
+Thimeo Stereo Tool serves the same JSON interface on its web port, so the tool
+reads an encoder as well: input level, output level and the active preset.
+That catches a crashed or silent encoder before the decoder runs out of
+buffer. Widget ids and a ready-made monitoring recipe are in
+[docs/stereotool.md](docs/stereotool.md).
+
 ### SNMP
 
 The unit itself has no SNMP agent, but this repository ships a **MIB** and a

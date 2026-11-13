@@ -4,9 +4,10 @@
 
 - Verified against **MicroMPX Decoder 5.0.7** (both of the author's decoders now
   run it): all nine widget ids are unchanged from 5.0.0 and 5.0.2.
-- Documented that the Thimeo Stereo Tool encoder exposes the same JSON
-  interface: the active preset is readable (widget 21060), the version and
-  license panels are not (TYPE_DISPLAYTEXT).
+- New [docs/stereotool.md](docs/stereotool.md): the encoder side of Thimeo
+  Stereo Tool uses the same JSON interface. Input level (2612), output level
+  (20252) and active preset (21060) are readable; the compact meter bar
+  (I/AGC/Clip) is TYPE_DISPLAYTWO and stays unreadable.
 
 ## 1.1.1 — 2026-11-13
 
