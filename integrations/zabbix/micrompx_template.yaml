@@ -1,0 +1,160 @@
+zabbix_export:
+  version: '8.0'
+  template_groups:
+    - uuid: 1946e898358d41d5bbe3fa5a01aa5989
+      name: Templates/MicroMPX
+  templates:
+    - uuid: 98e22552f8494ba9be5ad00b4c533440
+      template: 'MicroMPX decoder'
+      name: 'MicroMPX decoder'
+      description: 'Meters and status of a Thimeo MicroMPX decoder, read from its JSON interface by micrompx-monitor. Requires the UserParameters from integrations/zabbix on the agent.'
+      groups:
+        - name: Templates/MicroMPX
+      items:
+        - uuid: bd448a68d4a24b16bacea5c1784332bd
+          name: 'MicroMPX: measured loss'
+          key: 'micrompx.loss[{$MICROMPX.PORT}]'
+          history: 90d
+          value_type: FLOAT
+          units: '%'
+          description: 'Widget 23185: audio loss as measured by the decoder itself, in percent.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+          triggers:
+            - uuid: adf68b7b565341bd94c2df20d0ff605a
+              expression: 'min(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],5m)>{$MICROMPX.LOSS.WARN}'
+              name: 'MicroMPX: measured loss above {$MICROMPX.LOSS.WARN}%'
+              priority: WARNING
+              description: 'The decoder measures audio loss: packets arrive late or not at all. Check the RIST/UDP path and the encoder.'
+            - uuid: 980389e94d544e8fbb46e4e4fdc9d3e6
+              expression: 'min(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],5m)>{$MICROMPX.LOSS.HIGH}'
+              name: 'MicroMPX: measured loss above {$MICROMPX.LOSS.HIGH}%'
+              priority: HIGH
+            - uuid: 0fd0f8326259412f8fdd22a0f29aeaf1
+              expression: 'nodata(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],10m)=1'
+              name: 'MicroMPX: decoder not readable'
+              priority: HIGH
+              description: 'The JSON interface of the decoder did not answer; check the unit and the agent.'
+        - uuid: a047197b9be049af82098af488718283
+          name: 'MicroMPX: MPX output level'
+          key: 'micrompx.level[{$MICROMPX.PORT}]'
+          history: 90d
+          value_type: FLOAT
+          description: 'Widget 20252: MPX output level, 1.0 = 0 dB.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+          triggers:
+            - uuid: 50827940c12b41e9908a7d91479e4e32
+              expression: 'avg(/MicroMPX decoder/micrompx.level[{$MICROMPX.PORT}],5m)<0.01'
+              name: 'MicroMPX: no MPX output signal'
+              priority: HIGH
+        - uuid: fa2036800c264e87bbaee46f78841055
+          name: 'MicroMPX: backup player active'
+          key: 'micrompx.backup[{$MICROMPX.PORT}]'
+          history: 90d
+          description: 'Widget 7966: 1 means the backup player is on air, so there is no usable stream.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+          triggers:
+            - uuid: f206cea0496b419d97391d960dd032a6
+              expression: 'last(/MicroMPX decoder/micrompx.backup[{$MICROMPX.PORT}])=1'
+              name: 'MicroMPX: backup player on air'
+              priority: HIGH
+              description: 'The decoder fell back to its backup file: no usable MicroMPX stream.'
+        - uuid: f58b55c74ddc42a79d9cdd8a91d20d61
+          name: 'MicroMPX: configured inputs'
+          key: 'micrompx.inputs[{$MICROMPX.PORT}]'
+          delay: 5m
+          history: 30d
+          description: 'Widget 8431.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+        - uuid: b3b0caca501841a69b3ef5e4707bf992
+          name: 'MicroMPX: UDP port'
+          key: 'micrompx.udp.port[{$MICROMPX.PORT}]'
+          delay: 1h
+          history: 30d
+          description: 'Widget 4647.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+        - uuid: d7e721ec113443ef9cddf1527e27106d
+          name: 'MicroMPX: delay'
+          key: 'micrompx.delay[{$MICROMPX.PORT}]'
+          delay: 1h
+          history: 30d
+          units: s
+          description: 'Widget 4648: configured delay buffer.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+        - uuid: 492a175ede8a4a4697e300a8f0c2e2fe
+          name: 'MicroMPX: software version'
+          key: 'micrompx.version[{$MICROMPX.PORT}]'
+          delay: 1h
+          history: 30d
+          value_type: TEXT
+          description: 'Widget 21078.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+        - uuid: 1e0b1cb0c7b945eabd22dc97031bc5ad
+          name: 'MicroMPX: description'
+          key: 'micrompx.description[{$MICROMPX.PORT}]'
+          delay: 1h
+          history: 30d
+          value_type: TEXT
+          description: 'Widget 20855: description of this unit as set in the GUI.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+        - uuid: 8d62d854c152497495946e07ea9a6d72
+          name: 'MicroMPX: RIST source'
+          key: 'micrompx.rist.source[{$MICROMPX.PORT}]'
+          delay: 1h
+          history: 30d
+          value_type: TEXT
+          description: 'Widget 9727: RIST source URL of the first input.'
+          timeout: 10s
+          tags:
+            - tag: component
+              value: micrompx
+      macros:
+        - macro: '{$MICROMPX.PORT}'
+          value: '8080'
+          description: 'Port of the MicroMPX web interface. Many decoders use 80; encoders usually 8080.'
+        - macro: '{$MICROMPX.LOSS.WARN}'
+          value: '1'
+          description: 'Measured loss percentage that counts as a warning. Set this above the normal baseline of the link.'
+        - macro: '{$MICROMPX.LOSS.HIGH}'
+          value: '5'
+          description: 'Measured loss percentage that counts as a high-severity problem.'
+  graphs:
+    - uuid: 54689ba4e8864ec3a7e822f6b92b4451
+      name: 'MicroMPX: loss and output level'
+      height: '220'
+      ymin_type_1: FIXED
+      graph_items:
+        - color: C62828
+          item:
+            host: 'MicroMPX decoder'
+            key: 'micrompx.loss[{$MICROMPX.PORT}]'
+        - sortorder: '1'
+          color: 1565C0
+          yaxisside: RIGHT
+          calc_fnc: AVG
+          item:
+            host: 'MicroMPX decoder'
+            key: 'micrompx.level[{$MICROMPX.PORT}]'

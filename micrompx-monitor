@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""micrompx-monitor - read meters and status from Thimeo MicroMPX.
+
+MicroMPX (encoder and decoder) exposes almost everything its web GUI shows
+through a small JSON interface:
+
+    GET http://<host>:<port>/json-1/list{"<widget-id>":{}}
+
+Every parameter and meter has a numeric widget id. This tool bundles the ids
+that are useful for monitoring a decoder (packet loss, output level, backup
+player, version, RIST source) and can also probe arbitrary ids, so it keeps
+working when a future firmware renumbers or adds widgets.
+
+Standard library only; Python 3.8 or newer.
+
+Examples
+--------
+Read the standard metrics as a table:
+
+    micrompx-monitor --host 10.0.0.5 --port 8080 values
+
+Same as JSON (for scripts) or in Prometheus text format (for a textfile
+collector):
+
+    micrompx-monitor --host 10.0.0.5 --port 8080 values --format json
+    micrompx-monitor --host 10.0.0.5 --port 8080 values --format prometheus
+
+Read one raw widget (any id you found in the GUI):
+
+    micrompx-monitor --host 10.0.0.5 --port 8080 widget 23185
+
+Find out which widget ids your firmware version uses:
+
+    micrompx-monitor --host 10.0.0.5 --port 8080 discover --from 23000 --to 23300
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+__version__ = "1.0.0"
+
+DEFAULT_PORT = 8080
+DEFAULT_TIMEOUT = 5.0
+
+#: Widget ids as used by MicroMPX Decoder 5.0.x. Ids are not guaranteed to be
+#: stable across major versions - use "discover" if a value looks wrong.
+#: The "name", "id", "kind" and "help" fields drive every output format.
+METRICS = [
+    {
+        "name": "loss_percent",
+        "id": 23185,
+        "kind": "float",
+        "help": "Measured audio loss as reported by the decoder, in percent",
+    },
+    {
+        "name": "mpx_level",
+        "id": 20252,
+        "kind": "float",
+        "help": "MPX output level, 1.0 = 0 dB",
+    },
+    {
+        "name": "backup_active",
+        "id": 7966,
+        "kind": "int",
+        "help": "1 when the backup player is on air (no usable MicroMPX stream)",
+    },
+    {
+        "name": "inputs",
+        "id": 8431,
+        "kind": "int",
+        "help": "Number of configured MicroMPX inputs",
+    },
+    {
+        "name": "udp_port",
+        "id": 4647,
+        "kind": "int",
+        "help": "UDP port the decoder listens on",
+    },
+    {
+        "name": "delay_seconds",
+        "id": 4648,
+        "kind": "float",
+        "help": "Configured delay buffer, in seconds",
+    },
+    {
+        "name": "version",
+        "id": 21078,
+        "kind": "text",
+        "help": "Software version",
+    },
+    {
+        "name": "description",
+        "id": 20855,
+        "kind": "text",
+        "help": "Description of this unit, as set in the GUI",
+    },
+    {
+        "name": "rist_source",
+        "id": 9727,
+        "kind": "text",
+        "help": "RIST source URL of the first input",
+    },
+]
+
+
+class MicroMPXError(Exception):
+    """Raised when the decoder cannot be reached or returns nothing useful."""
+
+
+def widget_url(host: str, port: int, token: str, widget_id: int) -> str:
+    body = '{"%d":{}}' % widget_id
+    auth = "." + token if token else ""
+    return "http://%s:%d/json-1%s/list%s" % (
+        host,
+        port,
+        auth,
+        urllib.parse.quote(body, safe=""),
+    )
+
+
+def read_widget(host: str, port: int, token: str, widget_id: int, timeout: float) -> dict:
+    url = widget_url(host, port, token, widget_id)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError) as exc:
+        raise MicroMPXError("cannot reach %s:%d (%s)" % (host, port, exc)) from exc
+    except json.JSONDecodeError as exc:
+        raise MicroMPXError("response for widget %d is not JSON (%s)" % (widget_id, exc)) from exc
+    entry = payload.get(str(widget_id))
+    if not isinstance(entry, dict):
+        raise MicroMPXError("widget %d: %s" % (widget_id, entry))
+    return entry
+
+
+def label_of(entry: dict) -> str:
+    """The GUI label lives before the '|' in the 'text' field."""
+    text = str(entry.get("text") or "")
+    return text.split("|", 1)[0].strip()
+
+
+def value_of(entry: dict) -> str:
+    return str(entry.get("value", ""))
+
+
+def collect(args) -> dict:
+    """Return {metric name: value} for all metrics, plus raw widget entries."""
+    values: dict = {}
+    raw: dict = {}
+    for metric in METRICS:
+        try:
+            entry = read_widget(args.host, args.port, args.token, metric["id"], args.timeout)
+        except MicroMPXError:
+            if args.strict:
+                raise
+            values[metric["name"]] = None
+            continue
+        raw[metric["name"]] = entry
+        text = value_of(entry)
+        if metric["kind"] == "text":
+            values[metric["name"]] = text
+            continue
+        try:
+            number = float(text)
+        except ValueError:
+            values[metric["name"]] = None
+            continue
+        values[metric["name"]] = int(number) if metric["kind"] == "int" else number
+    return {"values": values, "raw": raw}
+
+
+def print_table(result: dict, args) -> None:
+    values = result["values"]
+    description = values.get("description") or "MicroMPX"
+    print("%s (%s:%d)" % (description, args.host, args.port))
+    print()
+    width = max(len(metric["name"]) for metric in METRICS)
+    for metric in METRICS:
+        value = values.get(metric["name"])
+        shown = "-" if value is None else value
+        print("  %-*s  %s" % (width, metric["name"], shown))
+    version = values.get("version")
+    if version:
+        print()
+        print("  firmware %s" % version)
+
+
+def print_json(result: dict, args) -> None:
+    payload = {
+        "host": args.host,
+        "port": args.port,
+        "timestamp": int(time.time()),
+        "values": result["values"],
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def print_prometheus(result: dict, args) -> None:
+    values = result["values"]
+    instance = "%s:%d" % (args.host, args.port)
+    description = str(values.get("description") or "").replace("\\", "\\\\").replace('"', '\\"')
+    version = str(values.get("version") or "").replace('"', '\\"')
+    rist = str(values.get("rist_source") or "").replace('"', '\\"')
+    label = 'instance="%s",description="%s"' % (instance, description)
+    for metric in METRICS:
+        if metric["kind"] == "text":
+            continue
+        value = values.get(metric["name"])
+        if value is None:
+            continue
+        print("# HELP micrompx_%s %s" % (metric["name"], metric["help"]))
+        print("# TYPE micrompx_%s gauge" % metric["name"])
+        print('micrompx_%s{%s} %s' % (metric["name"], label, value))
+    print("# HELP micrompx_info Static information about this unit")
+    print("# TYPE micrompx_info gauge")
+    print('micrompx_info{%s,version="%s",rist_source="%s"} 1' % (label, version, rist))
+    print("# HELP micrompx_up 1 when the decoder answered")
+    print("# TYPE micrompx_up gauge")
+    print("micrompx_up{%s} 1" % label)
+
+
+def command_values(args) -> int:
+    result = collect(args)
+    if args.format == "json":
+        print_json(result, args)
+    elif args.format == "prometheus":
+        print_prometheus(result, args)
+    else:
+        print_table(result, args)
+    return 0
+
+
+def command_widget(args) -> int:
+    entry = read_widget(args.host, args.port, args.token, args.widget, args.timeout)
+    if args.format == "json":
+        print(json.dumps(entry, indent=2, sort_keys=True))
+    elif args.format == "value":
+        print(value_of(entry))
+    else:
+        label = label_of(entry) or "(no label)"
+        print("%d  %s = %s" % (args.widget, label, value_of(entry)))
+    return 0
+
+
+def command_discover(args) -> int:
+    found = 0
+    for widget_id in range(args.from_id, args.to_id + 1):
+        try:
+            entry = read_widget(args.host, args.port, args.token, widget_id, args.timeout)
+        except MicroMPXError:
+            continue
+        label = label_of(entry)
+        value = value_of(entry)
+        if not label and not value:
+            continue
+        print("%7d  %-40s %s" % (widget_id, label or "(no label)", value))
+        found += 1
+    print("\n%d widgets with a value between %d and %d" % (found, args.from_id, args.to_id))
+    return 0
+
+
+def command_metrics(args) -> int:
+    for metric in METRICS:
+        print("%-16s %7d  %-5s %s" % (metric["name"], metric["id"], metric["kind"], metric["help"]))
+    return 0
+
+
+def command_watch(args) -> int:
+    try:
+        while True:
+            result = collect(args)
+            if args.format == "json" or args.format == "prometheus":
+                print(json.dumps({"timestamp": int(time.time()), "values": result["values"]}))
+            else:
+                values = result["values"]
+                print(
+                    "%s loss=%s%% level=%s backup=%s"
+                    % (
+                        time.strftime("%H:%M:%S"),
+                        values.get("loss_percent"),
+                        values.get("mpx_level"),
+                        values.get("backup_active"),
+                    )
+                )
+            sys.stdout.flush()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="micrompx-monitor",
+        description="Read meters and status from a Thimeo MicroMPX encoder or decoder.",
+        epilog="See docs/json-api.md for the widget ids and how the interface works.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="address of the unit (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="web interface port (default: 8080; decoders often use 80)")
+    parser.add_argument("--token", default="", help="JSON token, if one is configured in the GUI")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="socket timeout in seconds (default: 5)")
+    parser.add_argument("--version", action="version", version="micrompx-monitor " + __version__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    values = sub.add_parser("values", help="read the standard set of metrics")
+    values.add_argument("--format", choices=["table", "json", "prometheus"], default="table")
+    values.add_argument("--strict", action="store_true", help="fail instead of printing '-' for unreadable widgets")
+    values.set_defaults(func=command_values)
+
+    widget = sub.add_parser("widget", help="read one raw widget by id")
+    widget.add_argument("widget", type=int, help="widget id, for example 23185")
+    widget.add_argument(
+        "--format", choices=["text", "json", "value"], default="text",
+        help="'value' prints only the raw value, which is what monitoring agents need",
+    )
+    widget.set_defaults(func=command_widget)
+
+    discover = sub.add_parser("discover", help="probe a range of widget ids and print the ones that answer")
+    discover.add_argument("--from", dest="from_id", type=int, required=True, help="first widget id")
+    discover.add_argument("--to", dest="to_id", type=int, required=True, help="last widget id")
+    discover.set_defaults(func=command_discover)
+
+    metrics = sub.add_parser("metrics", help="list the metric names, widget ids and meaning")
+    metrics.set_defaults(func=command_metrics)
+
+    watch = sub.add_parser("watch", help="repeat the metrics every N seconds")
+    watch.add_argument("--interval", type=float, default=5.0, help="seconds between samples (default: 5)")
+    watch.add_argument("--format", choices=["table", "json"], default="table")
+    watch.set_defaults(func=command_watch)
+
+    return parser
+
+
+def main(argv=None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except MicroMPXError as exc:
+        print("micrompx-monitor: %s" % exc, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
