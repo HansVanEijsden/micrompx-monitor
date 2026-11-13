@@ -54,3 +54,18 @@ Zabbix agent and use the Prometheus/SNMP route below.
 
 All items and triggers are named in English; the graph combines loss (left
 axis) with the MPX level (right axis).
+## Dashboard widgets stay empty?
+
+An SVG graph widget in Zabbix references its data by **visible host name**
+(`ds.N.hosts.0`), not by the technical host name. If you gave a host a
+friendly display name (*"1Zwolle — MicroMPX decoder"*) while the widget
+points at `1Zwolle-mMPX-Zwolle`, the widget renders a title and nothing else:
+no axes, no legend, no lines.
+
+Two ways out: point the widget at the visible name, or keep the visible name
+identical to the technical one. The second is simpler and is what this
+repository's examples assume.
+
+Rule of thumb when a widget looks broken: **axes present = data problem**
+(no history yet, wrong item), **no axes at all = resolution problem** (host or
+item name does not match).
