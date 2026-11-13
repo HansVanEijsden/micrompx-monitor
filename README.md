@@ -182,10 +182,12 @@ in [docs/json-api.md](docs/json-api.md).
 
 Reasonable starting points, adjust to your link:
 
-- **measured loss above the site baseline for 5 minutes** — warning: check the
-  RIST/UDP path and the encoder side. The Zabbix template uses
-  `{$MICROMPX.LOSS.WARN}` / `{$MICROMPX.LOSS.HIGH}` for this; set them per
-  site (for example 1/5 on a clean fibre link, 35/50 on a busy microwave hop).
+- **measured loss above the site baseline** — warning: check the RIST/UDP
+  path and the encoder side. The value is a rolling average over roughly three
+  minutes, so a 10-second burst is still visible for several minutes. The Zabbix
+  template alerts with `max(…,10m) > {$MICROMPX.LOSS.WARN}` for "loss detected"
+  and `min(…,10m) > {$MICROMPX.LOSS.HIGH}` for "loss sustained"; set the two
+  macros per site (the default 1/5 works when the normal value is 0.0).
 - **measured loss far above baseline** — high: error correction is running out.
 - **backup player active** — high: the decoder fell back to its backup file,
   the stream is not usable.

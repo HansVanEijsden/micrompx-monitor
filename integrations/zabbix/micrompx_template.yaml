@@ -24,13 +24,13 @@ zabbix_export:
               value: micrompx
           triggers:
             - uuid: adf68b7b565341bd94c2df20d0ff605a
-              expression: 'min(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],5m)>{$MICROMPX.LOSS.WARN}'
-              name: 'MicroMPX: measured loss above {$MICROMPX.LOSS.WARN}%'
+              expression: 'max(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],10m)>{$MICROMPX.LOSS.WARN}'
+              name: 'MicroMPX: measured loss detected (> {$MICROMPX.LOSS.WARN}%)'
               priority: WARNING
               description: 'The decoder measures audio loss: packets arrive late or not at all. Check the RIST/UDP path and the encoder.'
             - uuid: 980389e94d544e8fbb46e4e4fdc9d3e6
-              expression: 'min(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],5m)>{$MICROMPX.LOSS.HIGH}'
-              name: 'MicroMPX: measured loss above {$MICROMPX.LOSS.HIGH}%'
+              expression: 'min(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],10m)>{$MICROMPX.LOSS.HIGH}'
+              name: 'MicroMPX: sustained measured loss (> {$MICROMPX.LOSS.HIGH}%)'
               priority: HIGH
             - uuid: 0fd0f8326259412f8fdd22a0f29aeaf1
               expression: 'nodata(/MicroMPX decoder/micrompx.loss[{$MICROMPX.PORT}],10m)=1'

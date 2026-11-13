@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-11-13
+
+- Trigger semantics for measured loss: `max(…,10m)` for "loss detected"
+  and `min(…,10m)` for "loss sustained". The decoder reports a rolling
+  average over roughly three minutes, not a counter and not a snapshot, so a
+  short burst is visible for minutes and a `min()` over a short window was
+  too strict.
+- Documentation of the measurement window and what it means for polling
+  intervals.
+
 ## 1.1.0 — 2026-11-13
 
 - **SNMP**: a `MICROMPX-MIB` (SMIv2) with ten scalars for a decoder, a

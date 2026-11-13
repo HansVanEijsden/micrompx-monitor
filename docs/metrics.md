@@ -15,6 +15,34 @@ That is useful, but it also means the number has a baseline per site: one
 installation sits at 0.0 %, another at 20 % all day. Alert on the value being
 *worse than usual*, not on it being non-zero.
 
+### How the value behaves in time
+
+Measured loss is a **rolling average, not a counter and not a snapshot**.
+Measured on two decoders with one-second sampling and by looking at a month
+of minute samples:
+
+- It goes back to 0 and it goes down, so it is not cumulative.
+- A burst lifts the value and it decays over the following **2–4 minutes**;
+  observed decays such as 4.2 % → 2.7 % → 1.2 % → 0.0 % at one-minute
+  intervals fit a window of about three minutes.
+- A unit that was polled heavily for a few minutes (thousands of HTTP
+  requests in a burst) showed 19–28 % for a minute and then decayed to 0,
+  so the measurement reacts to packets arriving late, not only to a dead
+  network.
+
+Practical consequences:
+
+- **Poll every 30–60 seconds.** A 10-second loss burst lifts the average for
+  minutes, so minute polling does catch it — that is what the samples above
+  show. Polling every 5 minutes still catches most bursts, but you lose the
+  shape of the event.
+- **Alert on `max()` over 10 minutes** for "any loss happened" and on
+  `min()` over 10 minutes for "loss sustained", which is what the Zabbix
+  template does. The average already smooths, so a `min()` over a short
+  window would be too strict.
+- Keep polling modest: the value is sensitive to load on the unit, so do not
+  hammer the web interface while measuring.
+
 - **0.00 %** — clean link.
 - **a few percent** — the path is dropping packets; error correction is working
   but the margin is shrinking.
