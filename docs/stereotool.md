@@ -24,7 +24,7 @@ while the encoder itself shows the silence immediately.
 |---|---|---|---|
 | 2612 | Input level (`value`, `value_db`) | wave | yes |
 | 20252 | Final (FM) output level (`value`, `value_db`) | wave | yes |
-| 20631 | MPX meter (`main`) | processing | yes |
+| 20631 | MP / MPX power (`main`), the loudness meter | processing | yes |
 | 23242 | Speech detection (`main`, `2nd`) | processing | yes |
 | 21060 | Active preset (`value`) | active_preset | yes |
 | 20301, 20635, 20890, 22357, 20034, 20320 | I / AGC / TB / SBB / Clip / O in the meter bar | TYPE_DISPLAYTWO | **no** |
@@ -56,8 +56,33 @@ Two ways, neither needs a change to the running stream:
 
 The input follows the programme; the output stays pinned near 0 dBFS because
 it is the *processed* FM output. A meter that does not follow the music is a
-post-processing tap. As a control, 20631 (`MP`) sat perfectly still at 0.80
-and 0.75 on both units — that is a *setting* (MPX power), not a meter.
+post-processing tap.
+
+Careful with **20631** (`MP`): it barely moves, which made me mistake it for a
+setting at first. It is not — it is the **MPX power meter in dBr**, the number
+broadcast engineers use to judge processing loudness. It moves slowly on
+purpose: it is a long-term average, not a level.
+## Reading the MP (MPX power) meter
+
+Widget 20631 reports `main`, the needle position as a fraction of the meter,
+with `db_range: 18`. The scale runs from **+12 dBr at the top to −6 dBr at
+the bottom**, so the conversion is:
+
+```
+dBr = main * 18 - 6
+```
+
+Measured: 0.782 → 8.0 dBr (site A), 0.770 → 7.9 dBr (site B) — both in the
+7–9 dBr that FM broadcasters aim for. A value well below 7 means the
+processing is not contributing enough loudness; far above 9 means it is being
+overdriven (and MPX power regulations are about dBr, not about peak level).
+
+So the two numbers worth graphing next to each other are the **input level**
+(what comes in) and the **MPX power** (how loud it goes out):
+
+```bash
+micrompx-monitor --host 10.0.0.10 --port 8080 widget 20631 --format json
+```
 ## A recipe that works
 
 Three items are enough to catch most failures:
@@ -67,6 +92,7 @@ Three items are enough to catch most failures:
 | input level | `$["2612"].value_db` | `max(...,5m) < -55` → no audio at the input |
 | output level | `$["20252"].value_db` | `max(...,5m) < -50` → no MPX output |
 | active preset | `$["21060"].value` | hourly, for the dashboard and change history |
+| MPX power | `$["20631"].main * 18 - 6` | slow-moving, for loudness trending, not for alerting |
 
 The Zabbix template in `integrations/zabbix/` watches the decoder; the encoder
 template described here is the same idea with three HTTP agent items and needs
