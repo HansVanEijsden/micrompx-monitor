@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Verified against **MicroMPX Decoder 5.0.7** (both of the author's decoders now
+  run it): all nine widget ids are unchanged from 5.0.0 and 5.0.2.
+- Documented that the Thimeo Stereo Tool encoder exposes the same JSON
+  interface: the active preset is readable (widget 21060), the version and
+  license panels are not (TYPE_DISPLAYTEXT).
+
 ## 1.1.1 — 2026-11-13
 
 - Trigger semantics for measured loss: `max(…,10m)` for "loss detected"

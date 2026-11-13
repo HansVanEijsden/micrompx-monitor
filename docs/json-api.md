@@ -67,6 +67,8 @@ network.
 
 ## Widget ids for monitoring (MicroMPX Decoder 5.0.x)
 
+All of these were verified unchanged on **5.0.0, 5.0.2 and 5.0.7**.
+
 | id | label in the GUI | notes |
 |---|---|---|
 | **23185** | Measured loss | audio loss the decoder measures, in percent |

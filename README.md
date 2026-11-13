@@ -196,11 +196,18 @@ Reasonable starting points, adjust to your link:
 
 ## Compatibility
 
-Tested against MicroMPX Decoder 5.0.0 and 5.0.2. The JSON interface exists in
-older versions too, but widget ids move: several ids from older manuals
-(`11159`, `11714`, `11086`) no longer exist in 5.0.x. Use `discover` if a
-value looks off, and please open an issue with your version and the ids you
-found so the table in [docs/json-api.md](docs/json-api.md) can grow.
+Confirmed on **MicroMPX Decoder 5.0.0, 5.0.2 and 5.0.7**: the same widget ids
+work on all three, so the table below is stable across the 5.0 line. The JSON
+interface exists in older versions too, but ids do move between major versions:
+several ids from older manuals (`11159`, `11714`, `11086`) no longer exist
+in 5.0.x. Use `discover` if a value looks off, and please open an issue with your
+version and the ids you found so the table in
+[docs/json-api.md](docs/json-api.md) can grow.
+
+The encoder side (Thimeo Stereo Tool) exposes the same JSON interface on its web
+port; the preset name is readable (widget `21060`), but the software version
+and license panels are `TYPE_DISPLAYTEXT` widgets, which the JSON interface
+refuses — the same limitation as on the decoder.
 
 ## Security
 
