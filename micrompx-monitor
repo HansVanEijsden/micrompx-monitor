@@ -32,22 +32,40 @@ Read one raw widget (any id you found in the GUI):
 Find out which widget ids your firmware version uses:
 
     micrompx-monitor --host 10.0.0.5 --port 8080 discover --from 23000 --to 23300
+
+Exit codes
+----------
+0   at least one value was read (a partial answer is still a success)
+1   nothing could be read: the unit is unreachable or answered nothing useful
+2   usage or configuration error, or a read failed under ``--strict``
+
+The values are read in batches (one request for several widget ids), because
+the JSON parser inside MicroMPX is hand-written and each request costs it real
+work. ``--batch`` changes the batch size; ids that a truncated batch did not
+return are re-read on their own, so a batch can never lose a metric.
 """
 
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 5.0
+DEFAULT_BATCH_SIZE = 8
+MAX_BATCH_SIZE = 32
+#: A discover sweep is one HTTP request per ``--batch`` ids; keep it bounded so
+#: a typo cannot turn into a million requests against an embedded web server.
+MAX_DISCOVER_RANGE = 4096
 
 #: Widget ids as used by MicroMPX Decoder 5.0.x. Ids are not guaranteed to be
 #: stable across major versions - use "discover" if a value looks wrong.
@@ -109,34 +127,164 @@ METRICS = [
     },
 ]
 
-
 class MicroMPXError(Exception):
     """Raised when the decoder cannot be reached or returns nothing useful."""
 
 
-def widget_url(host: str, port: int, token: str, widget_id: int) -> str:
-    body = '{"%d":{}}' % widget_id
+def host_for_url(host: str) -> str:
+    """Validate a host and return it in the form a URL netloc wants.
+
+    IPv6 literals need brackets in a URL, and a bare ``::1`` in
+    ``http://::1:8080/`` is parsed as host "::1:8080" - silently wrong. An
+    address that already carries a scheme or a path is a configuration
+    mistake worth naming instead of turning into a strange DNS lookup.
+    """
+    text = (host or "").strip()
+    if not text:
+        raise MicroMPXError("no host given: pass --host <address>")
+    if "://" in text:
+        raise MicroMPXError(
+            "--host takes a bare address, not a URL (got %r; use --host/--port)" % text
+        )
+    if "/" in text or "?" in text:
+        raise MicroMPXError("--host takes a bare address, not a path (got %r)" % text)
+    if text.startswith("[") and text.endswith("]"):
+        return text
+    if ":" in text:
+        try:
+            ipaddress.IPv6Address(text)
+        except ValueError:
+            raise MicroMPXError(
+                "--host %r looks like host:port; pass the port with --port" % text
+            ) from None
+        return "[%s]" % text
+    return text
+
+
+def netloc(host: str, port: int) -> str:
+    return "%s:%d" % (host_for_url(host), port)
+
+
+def list_url(host: str, port: int, token: str, widget_ids) -> str:
+    """URL that asks for several widgets at once."""
+    ids = list(widget_ids)
+    if not ids:
+        raise MicroMPXError("no widget ids to read")
+    body = "{" + ",".join('"%d":{}' % int(widget_id) for widget_id in ids) + "}"
     auth = "." + token if token else ""
-    return "http://%s:%d/json-1%s/list%s" % (
-        host,
-        port,
+    return "http://%s/json-1%s/list%s" % (
+        netloc(host, port),
         auth,
         urllib.parse.quote(body, safe=""),
     )
 
 
-def read_widget(host: str, port: int, token: str, widget_id: int, timeout: float) -> dict:
-    url = widget_url(host, port, token, widget_id)
+def widget_url(host: str, port: int, token: str, widget_id: int) -> str:
+    return list_url(host, port, token, [int(widget_id)])
+
+
+def _fetch_json(url: str, timeout: float, where: str) -> dict:
+    """GET a URL and return the decoded JSON object.
+
+    Every failure mode of an embedded web server ends up as one exception
+    type: HTTP errors, unreachable hosts, garbage bodies and a body that is
+    valid JSON but not an object (a firmware answering ``"OK"`` used to die
+    with ``AttributeError: 'str' object has no attribute 'get'``).
+    """
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8", "replace"))
-    except (urllib.error.URLError, OSError) as exc:
-        raise MicroMPXError("cannot reach %s:%d (%s)" % (host, port, exc)) from exc
+            body = response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        raise MicroMPXError(
+            "%s answered HTTP %d (%s)" % (where, exc.code, exc.reason)
+        ) from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise MicroMPXError("cannot reach %s (%s)" % (where, exc)) from exc
+    try:
+        payload = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise MicroMPXError("response for widget %d is not JSON (%s)" % (widget_id, exc)) from exc
-    entry = payload.get(str(widget_id))
-    if not isinstance(entry, dict):
-        raise MicroMPXError("widget %d: %s" % (widget_id, entry))
+        raise MicroMPXError("%s did not answer JSON (%s)" % (where, exc)) from exc
+    if not isinstance(payload, dict):
+        raise MicroMPXError(
+            "%s answered a JSON %s where an object was expected"
+            % (where, type(payload).__name__)
+        )
+    return payload
+
+
+def read_widgets(
+    host: str,
+    port: int,
+    token: str,
+    widget_ids,
+    timeout: float = DEFAULT_TIMEOUT,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    fallback: bool = True,
+) -> tuple:
+    """Read many widgets, returning ``(entries, errors)`` keyed by widget id.
+
+    ``entries`` holds the dict answers, ``errors`` a message per id that did
+    not answer. MicroMPX truncates large batches silently, so anything a batch
+    did not return is re-read on its own (``fallback``). A sweep of ids that
+    mostly do not exist (``discover``) turns the fallback off: a missing id
+    there is an answer, not a loss.
+    """
+    ids = [int(widget_id) for widget_id in widget_ids]
+    size = max(1, int(batch_size))
+    entries: dict = {}
+    errors: dict = {}
+    where = netloc(host, port)
+    for start in range(0, len(ids), size):
+        chunk = ids[start : start + size]
+        try:
+            payload = _fetch_json(list_url(host, port, token, chunk), timeout, where)
+        except MicroMPXError as exc:
+            for widget_id in chunk:
+                errors[widget_id] = str(exc)
+            continue
+        missing = []
+        for widget_id in chunk:
+            entry = payload.get(str(widget_id))
+            if isinstance(entry, dict):
+                entries[widget_id] = entry
+            elif entry is None:
+                missing.append(widget_id)
+            else:
+                errors[widget_id] = "widget %d: %s" % (widget_id, entry)
+        if not fallback:
+            continue
+        for widget_id in missing:
+            try:
+                payload = _fetch_json(
+                    widget_url(host, port, token, widget_id), timeout, where
+                )
+            except MicroMPXError as exc:
+                errors[widget_id] = str(exc)
+                continue
+            entry = payload.get(str(widget_id))
+            if isinstance(entry, dict):
+                entries[widget_id] = entry
+            elif entry is None:
+                errors[widget_id] = "widget %d: no answer" % widget_id
+            else:
+                errors[widget_id] = "widget %d: %s" % (widget_id, entry)
+    return entries, errors
+
+
+def read_widget(
+    host: str,
+    port: int,
+    token: str,
+    widget_id: int,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """Read one widget, raising MicroMPXError when it does not answer."""
+    entries, errors = read_widgets(
+        host, port, token, [widget_id], timeout, batch_size=1
+    )
+    entry = entries.get(int(widget_id))
+    if entry is None:
+        raise MicroMPXError(errors.get(int(widget_id), "widget %d: no answer" % widget_id))
     return entry
 
 
@@ -150,36 +298,70 @@ def value_of(entry: dict) -> str:
     return str(entry.get("value", ""))
 
 
-def collect(args) -> dict:
-    """Return {metric name: value} for all metrics, plus raw widget entries."""
+def parse_value(metric: dict, entry: dict) -> tuple:
+    """Return ``(value, error)`` for one metric entry."""
+    text = value_of(entry)
+    if metric["kind"] == "text":
+        return text, None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None, "widget %d: %r is not a number" % (metric["id"], text)
+    return (int(number) if metric["kind"] == "int" else number), None
+
+
+def collect(
+    host: str,
+    port: int,
+    token: str = "",
+    timeout: float = DEFAULT_TIMEOUT,
+    strict: bool = False,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+) -> dict:
+    """Return the metric values, the raw widget entries and the errors.
+
+    One request per batch of metrics instead of one request per metric: a
+    ``values`` run against a decoder went from nine round trips to two. With
+    ``strict`` the first unreadable metric raises instead of becoming None.
+    """
+    entries, raw_errors = read_widgets(
+        host,
+        port,
+        token,
+        [metric["id"] for metric in METRICS],
+        timeout,
+        batch_size=batch_size,
+    )
     values: dict = {}
     raw: dict = {}
+    errors: dict = {}
     for metric in METRICS:
-        try:
-            entry = read_widget(args.host, args.port, args.token, metric["id"], args.timeout)
-        except MicroMPXError:
-            if args.strict:
-                raise
+        entry = entries.get(metric["id"])
+        if entry is None:
+            message = raw_errors.get(metric["id"], "widget %d: no answer" % metric["id"])
+            if strict:
+                raise MicroMPXError("%s: %s" % (metric["name"], message))
             values[metric["name"]] = None
+            errors[metric["name"]] = message
             continue
         raw[metric["name"]] = entry
-        text = value_of(entry)
-        if metric["kind"] == "text":
-            values[metric["name"]] = text
-            continue
-        try:
-            number = float(text)
-        except ValueError:
-            values[metric["name"]] = None
-            continue
-        values[metric["name"]] = int(number) if metric["kind"] == "int" else number
-    return {"values": values, "raw": raw}
+        value, problem = parse_value(metric, entry)
+        if problem is not None:
+            if strict:
+                raise MicroMPXError("%s: %s" % (metric["name"], problem))
+            errors[metric["name"]] = problem
+        values[metric["name"]] = value
+    return {"values": values, "raw": raw, "errors": errors}
 
 
-def print_table(result: dict, args) -> None:
+def readable_count(result: dict) -> int:
+    return sum(1 for value in result["values"].values() if value is not None)
+
+
+def print_table(result: dict, host: str, port: int) -> None:
     values = result["values"]
     description = values.get("description") or "MicroMPX"
-    print("%s (%s:%d)" % (description, args.host, args.port))
+    print("%s (%s:%d)" % (description, host, port))
     print()
     width = max(len(metric["name"]) for metric in METRICS)
     for metric in METRICS:
@@ -192,48 +374,104 @@ def print_table(result: dict, args) -> None:
         print("  firmware %s" % version)
 
 
-def print_json(result: dict, args) -> None:
+def print_json(result: dict, host: str, port: int) -> None:
     payload = {
-        "host": args.host,
-        "port": args.port,
+        "host": host,
+        "port": port,
         "timestamp": int(time.time()),
         "values": result["values"],
+        "readable": readable_count(result),
+        "total": len(result["values"]),
     }
+    if result["errors"]:
+        payload["errors"] = result["errors"]
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def print_prometheus(result: dict, args) -> None:
+def escape_label(value) -> str:
+    """Escape a Prometheus label value (backslash, quote, newline, CR, tab)."""
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+        .replace('"', '\\"')
+    )
+
+
+def escape_help(text) -> str:
+    """Escape a Prometheus HELP string (backslash and newline only)."""
+    return str(text).replace("\\", "\\\\").replace("\n", "\\n")
+
+
+def print_prometheus(result: dict, host: str, port: int) -> None:
     values = result["values"]
-    instance = "%s:%d" % (args.host, args.port)
-    description = str(values.get("description") or "").replace("\\", "\\\\").replace('"', '\\"')
-    version = str(values.get("version") or "").replace('"', '\\"')
-    rist = str(values.get("rist_source") or "").replace('"', '\\"')
-    label = 'instance="%s",description="%s"' % (instance, description)
+    instance = "%s:%d" % (host_for_url(host), port)
+    up = 1 if readable_count(result) else 0
+    label = 'instance="%s",description="%s"' % (
+        escape_label(instance),
+        escape_label(values.get("description") or ""),
+    )
     for metric in METRICS:
         if metric["kind"] == "text":
             continue
         value = values.get(metric["name"])
         if value is None:
             continue
-        print("# HELP micrompx_%s %s" % (metric["name"], metric["help"]))
+        print("# HELP micrompx_%s %s" % (metric["name"], escape_help(metric["help"])))
         print("# TYPE micrompx_%s gauge" % metric["name"])
-        print('micrompx_%s{%s} %s' % (metric["name"], label, value))
+        print("micrompx_%s{%s} %s" % (metric["name"], label, value))
     print("# HELP micrompx_info Static information about this unit")
     print("# TYPE micrompx_info gauge")
-    print('micrompx_info{%s,version="%s",rist_source="%s"} 1' % (label, version, rist))
-    print("# HELP micrompx_up 1 when the decoder answered")
+    print(
+        'micrompx_info{%s,version="%s",rist_source="%s"} 1'
+        % (
+            label,
+            escape_label(values.get("version") or ""),
+            escape_label(values.get("rist_source") or ""),
+        )
+    )
+    print("# HELP micrompx_up 1 when the decoder answered, 0 when nothing could be read")
     print("# TYPE micrompx_up gauge")
-    print("micrompx_up{%s} 1" % label)
+    print("micrompx_up{%s} %d" % (label, up))
+
+
+def report_failure(result: dict, host: str, port: int) -> None:
+    """Name what went wrong on stderr; the caller turns it into an exit code."""
+    if not result["errors"]:
+        return
+    if readable_count(result):
+        names = ", ".join(sorted(result["errors"]))
+        print(
+            "micrompx-monitor: could not read %s from %s:%d"
+            % (names, host_for_url(host), port),
+            file=sys.stderr,
+        )
+        return
+    first = next(iter(result["errors"].values()))
+    print("micrompx-monitor: %s" % first, file=sys.stderr)
 
 
 def command_values(args) -> int:
-    result = collect(args)
+    result = collect(
+        args.host,
+        args.port,
+        args.token,
+        args.timeout,
+        strict=args.strict,
+        batch_size=args.batch,
+    )
     if args.format == "json":
-        print_json(result, args)
+        print_json(result, args.host, args.port)
     elif args.format == "prometheus":
-        print_prometheus(result, args)
+        print_prometheus(result, args.host, args.port)
     else:
-        print_table(result, args)
+        print_table(result, args.host, args.port)
+    if not readable_count(result):
+        report_failure(result, args.host, args.port)
+        return 1
+    report_failure(result, args.host, args.port)
     return 0
 
 
@@ -250,11 +488,20 @@ def command_widget(args) -> int:
 
 
 def command_discover(args) -> int:
+    ids = list(range(args.from_id, args.to_id + 1))
+    entries, _errors = read_widgets(
+        args.host,
+        args.port,
+        args.token,
+        ids,
+        args.timeout,
+        batch_size=args.batch,
+        fallback=False,
+    )
     found = 0
-    for widget_id in range(args.from_id, args.to_id + 1):
-        try:
-            entry = read_widget(args.host, args.port, args.token, widget_id, args.timeout)
-        except MicroMPXError:
+    for widget_id in ids:
+        entry = entries.get(widget_id)
+        if entry is None:
             continue
         label = label_of(entry)
         value = value_of(entry)
@@ -262,7 +509,17 @@ def command_discover(args) -> int:
             continue
         print("%7d  %-40s %s" % (widget_id, label or "(no label)", value))
         found += 1
-    print("\n%d widgets with a value between %d and %d" % (found, args.from_id, args.to_id))
+    noun = "widget" if found == 1 else "widgets"
+    print(
+        "\n%d %s with a value between %d and %d (%d requests)"
+        % (
+            found,
+            noun,
+            args.from_id,
+            args.to_id,
+            -(-len(ids) // max(1, args.batch)),
+        )
+    )
     return 0
 
 
@@ -290,25 +547,32 @@ def snmp_values(args, cache: dict) -> dict:
     if cache.get("at", 0) + args.cache_seconds > now and "values" in cache:
         return cache["values"]
     try:
-        snapshot = collect(args)
+        snapshot = collect(
+            args.host,
+            args.port,
+            args.token,
+            args.timeout,
+            batch_size=args.batch,
+        )
         values = snapshot["values"]
-        status = 1
+        status = 1 if readable_count(snapshot) else 2
     except MicroMPXError:
         values = {}
         status = 2
+
     def scaled(key: str, factor: int) -> int:
         try:
-            return int(round(float(values.get(key)) * factor))
+            return round(float(values.get(key)) * factor)
         except (TypeError, ValueError):
             return 0
 
     scalars = {
         "status": status,
-        "loss_percent": scaled("loss_percent", 100),      # hundredths of a percent
-        "mpx_level": scaled("mpx_level", 1000),           # thousandths, 1000 = 0 dB
+        "loss_percent": scaled("loss_percent", 100),  # hundredths of a percent
+        "mpx_level": scaled("mpx_level", 1000),  # thousandths, 1000 = 0 dB
         "inputs": scaled("inputs", 1),
         "udp_port": scaled("udp_port", 1),
-        "delay_seconds": scaled("delay_seconds", 1000),   # milliseconds
+        "delay_seconds": scaled("delay_seconds", 1000),  # milliseconds
         "version": values.get("version") or "",
         "description": values.get("description") or "",
         "rist_source": values.get("rist_source") or "",
@@ -336,11 +600,16 @@ def command_pass_persist(args) -> int:
     """Speak the Net-SNMP pass_persist protocol on stdin/stdout.
 
     snmpd sends 'PING' (answer 'PONG'), or 'get'/'getnext' followed by an OID
-    line. We answer with three lines: OID, type, value - or 'NONE'.
+    line. We answer with three lines: OID, type, value - or 'NONE'. A 'set'
+    arrives with two more lines (type and value), which must be consumed even
+    though the MIB is read-only, or every later request is parsed from the
+    middle of a sentence.
     """
     cache: dict = {}
     order = [snmp_oid(args, str(sub_id)) for sub_id, _, _ in SNMP_SCALARS]
-    table = {snmp_oid(args, str(sub_id)): (metric, kind) for sub_id, metric, kind in SNMP_SCALARS}
+    table = {
+        snmp_oid(args, str(sub_id)): (metric, kind) for sub_id, metric, kind in SNMP_SCALARS
+    }
 
     while True:
         line = sys.stdin.readline()
@@ -351,6 +620,13 @@ def command_pass_persist(args) -> int:
             continue
         if command.upper() == "PING":
             print("PONG", flush=True)
+            continue
+        if command.lower() == "set":
+            # Read-only MIB: drain the OID, type and value lines, refuse.
+            sys.stdin.readline()
+            sys.stdin.readline()
+            sys.stdin.readline()
+            print("not-writable", flush=True)
             continue
         if command.lower() not in ("get", "getnext"):
             # Unknown command: consume its argument line and answer NONE.
@@ -379,7 +655,8 @@ def command_pass_persist(args) -> int:
 
 def _oid_gt(left: str, right: str) -> bool:
     """Compare dotted OIDs numerically, which is the SNMP ordering."""
-    def parts(value: str) -> list[int]:
+
+    def parts(value: str) -> list:
         out = []
         for chunk in value.strip(".").split("."):
             try:
@@ -387,6 +664,7 @@ def _oid_gt(left: str, right: str) -> bool:
             except ValueError:
                 out.append(0)
         return out
+
     return parts(left) > parts(right)
 
 
@@ -399,11 +677,20 @@ def command_metrics(args) -> int:
 def command_watch(args) -> int:
     try:
         while True:
-            result = collect(args)
-            if args.format == "json" or args.format == "prometheus":
-                print(json.dumps({"timestamp": int(time.time()), "values": result["values"]}))
+            result = collect(
+                args.host,
+                args.port,
+                args.token,
+                args.timeout,
+                batch_size=args.batch,
+            )
+            values = result["values"]
+            if args.format == "json":
+                print(json.dumps({"timestamp": int(time.time()), "values": values}))
+            elif not readable_count(result):
+                first = next(iter(result["errors"].values()), "no answer")
+                print("%s unreachable: %s" % (time.strftime("%H:%M:%S"), first))
             else:
-                values = result["values"]
                 print(
                     "%s loss=%s%% level=%s backup=%s"
                     % (
@@ -419,67 +706,218 @@ def command_watch(args) -> int:
         return 0
 
 
+def _port(value) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("port must be a number, got %r" % value) from None
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535, got %d" % port)
+    return port
+
+
+def _positive_seconds(name: str):
+    def parse(value) -> float:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            raise argparse.ArgumentTypeError("%s must be a number, got %r" % (name, value)) from None
+        if not seconds > 0:
+            raise argparse.ArgumentTypeError("%s must be greater than 0, got %g" % (name, seconds))
+        return seconds
+
+    return parse
+
+
+def _non_negative_seconds(name: str):
+    def parse(value) -> float:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            raise argparse.ArgumentTypeError("%s must be a number, got %r" % (name, value)) from None
+        if seconds < 0:
+            raise argparse.ArgumentTypeError("%s must not be negative, got %g" % (name, seconds))
+        return seconds
+
+    return parse
+
+
+def _batch_size(value) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("batch size must be a number, got %r" % value) from None
+    if not 1 <= count <= MAX_BATCH_SIZE:
+        raise argparse.ArgumentTypeError(
+            "batch size must be between 1 and %d, got %d" % (MAX_BATCH_SIZE, count)
+        )
+    return count
+
+
+def _connection_options(parser: argparse.ArgumentParser, suppress: bool) -> None:
+    """Add --host/--port/--token/--timeout/--batch to a parser.
+
+    The same options sit on the top-level parser and on every subcommand, so
+    ``values --host 10.0.0.5`` works as well as ``--host 10.0.0.5 values``.
+    ``SUPPRESS`` keeps an unset subcommand default from overwriting a value
+    given before the subcommand.
+    """
+    extra = {"default": argparse.SUPPRESS} if suppress else {}
+    parser.add_argument(
+        "--host",
+        metavar="ADDRESS",
+        help="address of the unit (default: 127.0.0.1; IPv6 as ::1 or [::1])",
+        **(extra if suppress else {"default": "127.0.0.1"}),
+    )
+    parser.add_argument(
+        "--port",
+        type=_port,
+        metavar="PORT",
+        help="web interface port, 1-65535 (default: 8080; decoders often use 80)",
+        **(extra if suppress else {"default": DEFAULT_PORT}),
+    )
+    parser.add_argument(
+        "--token",
+        metavar="TOKEN",
+        help="JSON token, if one is configured in the GUI",
+        **(extra if suppress else {"default": ""}),
+    )
+    parser.add_argument(
+        "--timeout",
+        type=_positive_seconds("timeout"),
+        metavar="SECONDS",
+        help="socket timeout in seconds, greater than 0 (default: 5)",
+        **(extra if suppress else {"default": DEFAULT_TIMEOUT}),
+    )
+    parser.add_argument(
+        "--batch",
+        type=_batch_size,
+        metavar="N",
+        help="widget ids per request, 1-%d (default: %d)"
+        % (MAX_BATCH_SIZE, DEFAULT_BATCH_SIZE),
+        **(extra if suppress else {"default": DEFAULT_BATCH_SIZE}),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="micrompx-monitor",
         description="Read meters and status from a Thimeo MicroMPX encoder or decoder.",
         epilog="See docs/json-api.md for the widget ids and how the interface works.",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="address of the unit (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="web interface port (default: 8080; decoders often use 80)")
-    parser.add_argument("--token", default="", help="JSON token, if one is configured in the GUI")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="socket timeout in seconds (default: 5)")
+    _connection_options(parser, suppress=False)
     parser.add_argument("--version", action="version", version="micrompx-monitor " + __version__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    values = sub.add_parser("values", help="read the standard set of metrics")
+    def subparser(name: str, help_text: str) -> argparse.ArgumentParser:
+        child = sub.add_parser(name, help=help_text)
+        _connection_options(child, suppress=True)
+        return child
+
+    values = subparser("values", "read the standard set of metrics")
     values.add_argument("--format", choices=["table", "json", "prometheus"], default="table")
-    values.add_argument("--strict", action="store_true", help="fail instead of printing '-' for unreadable widgets")
+    values.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail instead of printing '-' for unreadable widgets",
+    )
     values.set_defaults(func=command_values)
 
-    widget = sub.add_parser("widget", help="read one raw widget by id")
+    widget = subparser("widget", "read one raw widget by id")
     widget.add_argument("widget", type=int, help="widget id, for example 23185")
     widget.add_argument(
-        "--format", choices=["text", "json", "value"], default="text",
+        "--format",
+        choices=["text", "json", "value"],
+        default="text",
         help="'value' prints only the raw value, which is what monitoring agents need",
     )
     widget.set_defaults(func=command_widget)
 
-    discover = sub.add_parser("discover", help="probe a range of widget ids and print the ones that answer")
+    discover = subparser("discover", "probe a range of widget ids and print the ones that answer")
     discover.add_argument("--from", dest="from_id", type=int, required=True, help="first widget id")
     discover.add_argument("--to", dest="to_id", type=int, required=True, help="last widget id")
     discover.set_defaults(func=command_discover)
 
-    persist = sub.add_parser(
+    persist = subparser(
         "pass-persist",
-        help="serve the metrics to snmpd via the Net-SNMP pass_persist protocol",
+        "serve the metrics to snmpd via the Net-SNMP pass_persist protocol",
     )
     persist.add_argument(
-        "--oid-base", default=DEFAULT_OID_BASE,
+        "--oid-base",
+        default=DEFAULT_OID_BASE,
         help="base OID of the microMPXDecoder group (default: " + DEFAULT_OID_BASE + ")",
     )
-    persist.add_argument("--cache-seconds", type=float, default=10.0, help="seconds to reuse a snapshot (default: 10)")
+    persist.add_argument(
+        "--cache-seconds",
+        type=_non_negative_seconds("cache-seconds"),
+        default=10.0,
+        help="seconds to reuse a snapshot (default: 10)",
+    )
     persist.set_defaults(func=command_pass_persist)
 
-    metrics = sub.add_parser("metrics", help="list the metric names, widget ids and meaning")
+    metrics = subparser("metrics", "list the metric names, widget ids and meaning")
     metrics.set_defaults(func=command_metrics)
 
-    watch = sub.add_parser("watch", help="repeat the metrics every N seconds")
-    watch.add_argument("--interval", type=float, default=5.0, help="seconds between samples (default: 5)")
+    watch = subparser("watch", help_text="repeat the metrics every N seconds")
+    watch.add_argument(
+        "--interval",
+        type=_positive_seconds("interval"),
+        default=5.0,
+        help="seconds between samples, greater than 0 (default: 5)",
+    )
     watch.add_argument("--format", choices=["table", "json"], default="table")
     watch.set_defaults(func=command_watch)
 
     return parser
 
 
+def validate_args(parser: argparse.ArgumentParser, args) -> None:
+    """Cross-argument checks that argparse cannot express."""
+    if args.command == "discover":
+        if args.from_id < 0 or args.to_id < 0:
+            parser.error("discover needs non-negative widget ids")
+        if args.from_id > args.to_id:
+            parser.error(
+                "discover: --from %d is greater than --to %d" % (args.from_id, args.to_id)
+            )
+        if args.to_id - args.from_id + 1 > MAX_DISCOVER_RANGE:
+            parser.error(
+                "discover: a range of %d ids is more than the %d this tool probes at once"
+                % (args.to_id - args.from_id + 1, MAX_DISCOVER_RANGE)
+            )
+    if args.command == "widget" and args.widget < 0:
+        parser.error("widget id must not be negative")
+
+
+def discard_stdout() -> None:
+    """Point stdout at /dev/null after a closed pipe.
+
+    Closes nothing: the recipe from the Python documentation, because closing
+    ``sys.stdout`` here would also close a stream the caller may own (a test
+    runner's capture, a wrapper's file). Only the file descriptor is
+    redirected, so the interpreter's final flush cannot raise again.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    validate_args(parser, args)
     try:
         return args.func(args)
     except MicroMPXError as exc:
         print("micrompx-monitor: %s" % exc, file=sys.stderr)
         return 2
+    except BrokenPipeError:
+        # ``... | head`` closes the pipe; that is not an error worth a traceback.
+        discard_stdout()
+        return 0
 
 
 if __name__ == "__main__":
