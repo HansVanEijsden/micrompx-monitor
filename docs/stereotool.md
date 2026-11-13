@@ -23,7 +23,7 @@ while the encoder itself shows the silence immediately.
 | Id | Meaning | Type | Readable |
 |---|---|---|---|
 | 2612 | Input level (`value`, `value_db`) | wave | yes |
-| 20252 | Output / MPX level (`value`, `value_db`) | wave | yes |
+| 20252 | Final (FM) output level (`value`, `value_db`) | wave | yes |
 | 20631 | MPX meter (`main`) | processing | yes |
 | 23242 | Speech detection (`main`, `2nd`) | processing | yes |
 | 21060 | Active preset (`value`) | active_preset | yes |
@@ -35,6 +35,29 @@ Output meters on the main page are the readable ones. Meter labels are not in
 the JSON, but they are in the web interface's DOM: every meter block carries
 `data-widget-id` and its group button an `aria-label` such as `Meter: O`.
 
+## How to identify a widget yourself
+
+Two ways, neither needs a change to the running stream:
+
+1. **In the web interface.** Open the encoder GUI and inspect the element in
+   the browser's developer tools. Every meter block carries
+   `data-widget-id`, and the group button above it an `aria-label` such as
+   `Meter: O`. That is how 20252 was traced to the **Output** group and 2612
+   to **Input**.
+2. **By behaviour** (more conclusive). Sample a widget for a minute and look
+   at how it moves. Measured on two encoders:
+
+| Widget | mean | min–max | stddev | correlation with input |
+|---|---|---|---|---|
+| 2612 (input), site A | -2.0 dB | -7.0 … -0.8 | 1.50 | — |
+| 2612 (input), site B | -12.7 dB | -20.6 … -7.6 | 2.94 | — |
+| 20252 (output), site A | -0.2 dB | -3.1 … 0.0 | 0.56 | 0.57 |
+| 20252 (output), site B | -0.2 dB | -1.6 … 0.0 | 0.33 | 0.35 |
+
+The input follows the programme; the output stays pinned near 0 dBFS because
+it is the *processed* FM output. A meter that does not follow the music is a
+post-processing tap. As a control, 20631 (`MP`) sat perfectly still at 0.80
+and 0.75 on both units — that is a *setting* (MPX power), not a meter.
 ## A recipe that works
 
 Three items are enough to catch most failures:
