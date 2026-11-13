@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0 — 2026-11-13
+
+- **SNMP**: a `MICROMPX-MIB` (SMIv2) with ten scalars for a decoder, a
+  `make-mib.sh` that fills in your private enterprise number, and a
+  `pass-persist` mode so `snmpd` can serve the values as numeric OIDs.
+  Tested end to end against net-snmp 5.9 with `snmpget` and `snmpwalk`.
+- `pass-persist` caches a snapshot for 10 seconds (`--cache-seconds`),
+  so a walk costs one round of reads.
+- Documentation for SNMP, including the object table and the `extend` alternative.
+
 ## 1.0.0 — 2026-11-13
 
 - First release.

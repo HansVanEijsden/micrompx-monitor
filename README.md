@@ -41,6 +41,9 @@ $ micrompx-monitor --host 10.0.0.24 --port 8080 values
 | `description` | 20855 | description of the unit, as set in the GUI |
 | `rist_source` | 9727 | RIST source URL of the first input |
 
+All of these are also available over SNMP through the included MIB, and as
+graphs in Zabbix and Prometheus.
+
 `loss_percent` is the important one: it is the share of incoming packets the
 decoder had to do without, and it is a rolling measurement (it moves while you
 watch). A RIST or UDP path that quietly drops packets shows up here long before
@@ -130,10 +133,20 @@ systemd unit.
 
 ### SNMP
 
-The unit itself has no SNMP agent, but you can expose these values through
-`snmpd` with an `extend` line, which turns them into
-`NET-SNMP-EXTEND-MIB::nsExtendOutLine` OIDs. See
-`integrations/snmp/README.md`.
+The unit itself has no SNMP agent, but this repository ships a **MIB** and a
+`pass_persist` bridge, so `snmpd` serves the values as real numeric OIDs
+with correct types — SNMPv2c or SNMPv3, with all of `snmpd`'s access control:
+
+```bash
+./integrations/snmp/make-mib.sh <YOUR-PEN> /usr/share/snmp/mibs   # writes MICROMPX-MIB.txt
+echo 'pass_persist 1.3.6.1.4.1.<YOUR-PEN>.1.1.1 /usr/local/bin/micrompx-monitor --port 8080 pass-persist' | sudo tee -a /etc/snmp/snmpd.conf
+sudo systemctl restart snmpd
+snmpwalk -v2c -c public localhost MICROMPX-MIB::microMPXDecoder
+```
+
+A free private enterprise number (PEN) for the MIB is available at
+<https://pen.iana.org>. See `integrations/snmp/README.md` for the object
+table, testing and the simpler `extend` alternative.
 
 ### Anything else
 

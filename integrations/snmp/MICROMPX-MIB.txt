@@ -1,0 +1,130 @@
+MICROMPX-MIB DEFINITIONS ::= BEGIN
+
+-- Monitoring MIB for Thimeo MicroMPX encoders and decoders.
+--
+-- The values are the same meters the MicroMPX web interface shows; they are
+-- published here so that any NMS can poll them over SNMP.
+--
+-- The enterprise number below (99999) is a PLACEHOLDER. Register a private
+-- enterprise number (PEN) at https://pen.iana.org (free), then run:
+--
+--     ./make-mib.sh <YOUR-PEN>
+--
+-- and start the agent-side bridge with the matching base OID:
+--
+--     micrompx-monitor pass-persist with the oid-base flag set to
+--     1.3.6.1.4.1.<YOUR-PEN>.1.1.1
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, enterprises, Gauge32, Integer32
+        FROM SNMPv2-SMI
+    DisplayString, TruthValue
+        FROM SNMPv2-TC;
+
+microMPXOrg OBJECT IDENTIFIER ::= { enterprises 99999 }
+
+microMPX MODULE-IDENTITY
+    LAST-UPDATED "202611132200Z"
+    ORGANIZATION "micrompx-monitor (community project)"
+    CONTACT-INFO
+        "https://github.com/HansVanEijsden/micrompx-monitor"
+    DESCRIPTION
+        "Meters and status of a Thimeo MicroMPX encoder or decoder, read from
+        the JSON interface of the unit."
+    REVISION "202611132200Z"
+    DESCRIPTION "Initial version."
+    ::= { microMPXOrg 1 }
+
+microMPXMIBObjects OBJECT IDENTIFIER ::= { microMPX 1 }
+
+microMPXDecoder OBJECT IDENTIFIER ::= { microMPXMIBObjects 1 }
+
+microMPXDecStatus OBJECT-TYPE
+    SYNTAX      INTEGER { up(1), down(2) }
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Whether the JSON interface of the unit answered the last poll.
+        down(2) means the values in this group are unknown or stale."
+    ::= { microMPXDecoder 1 }
+
+microMPXDecMeasuredLoss OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "hundredths of a percent"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Audio loss as measured by the decoder itself, in hundredths of a
+        percent: 359 means 3.59 %. This is a rolling measurement, not a
+        counter; see the documentation for baseline considerations."
+    ::= { microMPXDecoder 2 }
+
+microMPXDecMpxLevel OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "thousandths"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "MPX output level, in thousandths: 1000 means 1.0 (0 dB)."
+    ::= { microMPXDecoder 3 }
+
+microMPXDecBackupActive OBJECT-TYPE
+    SYNTAX      TruthValue
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "true(1) while the decoder is playing its backup file, which means
+        there is no usable MicroMPX stream."
+    ::= { microMPXDecoder 4 }
+
+microMPXDecInputs OBJECT-TYPE
+    SYNTAX      Gauge32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Number of configured MicroMPX inputs."
+    ::= { microMPXDecoder 5 }
+
+microMPXDecUdpPort OBJECT-TYPE
+    SYNTAX      Gauge32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "UDP port the decoder listens on."
+    ::= { microMPXDecoder 6 }
+
+microMPXDecDelayMs OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "milliseconds"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Configured delay buffer, in milliseconds."
+    ::= { microMPXDecoder 7 }
+
+microMPXDecVersion OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..32))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Software version, for example 5.0.2."
+    ::= { microMPXDecoder 8 }
+
+microMPXDecDescription OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..255))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "Description of the unit, as set in its web interface."
+    ::= { microMPXDecoder 9 }
+
+microMPXDecRistSource OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..255))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION
+        "RIST source URL of the first input, for example
+        rist://192.0.2.10:8854. Empty when the input is not RIST."
+    ::= { microMPXDecoder 10 }
+
+END

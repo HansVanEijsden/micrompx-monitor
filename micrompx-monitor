@@ -44,7 +44,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 DEFAULT_PORT = 8080
 DEFAULT_TIMEOUT = 5.0
@@ -266,6 +266,130 @@ def command_discover(args) -> int:
     return 0
 
 
+#: Scalars for the SNMP pass_persist bridge: (sub-id, metric, type).
+#: The sub-ids match MICROMPX-MIB (microMPXDecoder group).
+SNMP_SCALARS = [
+    (1, "status", "integer"),
+    (2, "loss_percent", "gauge"),
+    (3, "mpx_level", "gauge"),
+    (4, "backup_active", "integer"),
+    (5, "inputs", "gauge"),
+    (6, "udp_port", "gauge"),
+    (7, "delay_seconds", "gauge"),
+    (8, "version", "string"),
+    (9, "description", "string"),
+    (10, "rist_source", "string"),
+]
+
+DEFAULT_OID_BASE = "1.3.6.1.4.1.99999.1.1.1"
+
+
+def snmp_values(args, cache: dict) -> dict:
+    """Return the SNMP scalars, refreshing the snapshot when the cache expires."""
+    now = time.time()
+    if cache.get("at", 0) + args.cache_seconds > now and "values" in cache:
+        return cache["values"]
+    try:
+        snapshot = collect(args)
+        values = snapshot["values"]
+        status = 1
+    except MicroMPXError:
+        values = {}
+        status = 2
+    def scaled(key: str, factor: int) -> int:
+        try:
+            return int(round(float(values.get(key)) * factor))
+        except (TypeError, ValueError):
+            return 0
+
+    scalars = {
+        "status": status,
+        "loss_percent": scaled("loss_percent", 100),      # hundredths of a percent
+        "mpx_level": scaled("mpx_level", 1000),           # thousandths, 1000 = 0 dB
+        "inputs": scaled("inputs", 1),
+        "udp_port": scaled("udp_port", 1),
+        "delay_seconds": scaled("delay_seconds", 1000),   # milliseconds
+        "version": values.get("version") or "",
+        "description": values.get("description") or "",
+        "rist_source": values.get("rist_source") or "",
+    }
+    backup = values.get("backup_active")
+    # TruthValue: true(1) / false(2)
+    scalars["backup_active"] = 2 if backup in (0, None) else 1
+    cache.clear()
+    cache["at"] = now
+    cache["values"] = scalars
+    return scalars
+
+
+def snmp_oid(args, sub_id: str) -> str:
+    return "%s.%s.0" % (args.oid_base.rstrip("."), sub_id)
+
+
+def snmp_respond(oid: str, kind: str, value) -> None:
+    print(oid, flush=True)
+    print(kind, flush=True)
+    print(value, flush=True)
+
+
+def command_pass_persist(args) -> int:
+    """Speak the Net-SNMP pass_persist protocol on stdin/stdout.
+
+    snmpd sends 'PING' (answer 'PONG'), or 'get'/'getnext' followed by an OID
+    line. We answer with three lines: OID, type, value - or 'NONE'.
+    """
+    cache: dict = {}
+    order = [snmp_oid(args, str(sub_id)) for sub_id, _, _ in SNMP_SCALARS]
+    table = {snmp_oid(args, str(sub_id)): (metric, kind) for sub_id, metric, kind in SNMP_SCALARS}
+
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return 0
+        command = line.strip()
+        if command == "":
+            continue
+        if command.upper() == "PING":
+            print("PONG", flush=True)
+            continue
+        if command.lower() not in ("get", "getnext"):
+            # Unknown command: consume its argument line and answer NONE.
+            sys.stdin.readline()
+            print("NONE", flush=True)
+            continue
+        # snmpd may send the OID with a leading dot; normalise before comparing.
+        oid = sys.stdin.readline().strip().lstrip(".")
+        if command.lower() == "get":
+            if oid not in table:
+                print("NONE", flush=True)
+                continue
+            metric, kind = table[oid]
+            values = snmp_values(args, cache)
+            snmp_respond(oid, kind, values.get(metric) if values.get(metric) is not None else "")
+            continue
+        # getnext: first OID in our tree that sorts after the requested one
+        nxt = next((candidate for candidate in order if _oid_gt(candidate, oid)), None)
+        if nxt is None:
+            print("NONE", flush=True)
+            continue
+        metric, kind = table[nxt]
+        values = snmp_values(args, cache)
+        snmp_respond(nxt, kind, values.get(metric) if values.get(metric) is not None else "")
+
+
+def _oid_gt(left: str, right: str) -> bool:
+    """Compare dotted OIDs numerically, which is the SNMP ordering."""
+    def parts(value: str) -> list[int]:
+        out = []
+        for chunk in value.strip(".").split("."):
+            try:
+                out.append(int(chunk))
+            except ValueError:
+                out.append(0)
+        return out
+    return parts(left) > parts(right)
+
+
 def command_metrics(args) -> int:
     for metric in METRICS:
         print("%-16s %7d  %-5s %s" % (metric["name"], metric["id"], metric["kind"], metric["help"]))
@@ -325,6 +449,17 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--from", dest="from_id", type=int, required=True, help="first widget id")
     discover.add_argument("--to", dest="to_id", type=int, required=True, help="last widget id")
     discover.set_defaults(func=command_discover)
+
+    persist = sub.add_parser(
+        "pass-persist",
+        help="serve the metrics to snmpd via the Net-SNMP pass_persist protocol",
+    )
+    persist.add_argument(
+        "--oid-base", default=DEFAULT_OID_BASE,
+        help="base OID of the microMPXDecoder group (default: " + DEFAULT_OID_BASE + ")",
+    )
+    persist.add_argument("--cache-seconds", type=float, default=10.0, help="seconds to reuse a snapshot (default: 10)")
+    persist.set_defaults(func=command_pass_persist)
 
     metrics = sub.add_parser("metrics", help="list the metric names, widget ids and meaning")
     metrics.set_defaults(func=command_metrics)
