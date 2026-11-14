@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 — 2026-11-14
 
+- **Fixed: `--oid-base` with a leading dot produced an empty SNMP subtree.**
+  snmpd writes its own `pass_persist` line as `.1.3.6.1.4.1.12345.1.1.1`, so
+  copying that OID into `--oid-base` is the obvious thing to do — but the
+  leading dot stayed in the table and every `get`/`getnext` answered `NONE`.
+  The base is normalised now.
+- **Fixed: the SNMP documentation's `pass_persist` line omitted `--oid-base`**,
+  so the example never returned a value, and it did not say that the option
+  belongs after the `pass-persist` command word. Both examples show it now.
+- The SNMP chapter warns to *restart* `snmpd` instead of reloading it: on
+  net-snmp 5.9 (Debian 12) a `SIGHUP` reload with a `pass_persist` line in the
+  configuration killed the daemon with SIGSEGV.
 - `make-mib.sh` accepts an optional third argument (a sub-identifier) so the
   MIB can live under an existing enterprise number, for example
   `./make-mib.sh 53021 /usr/share/snmp/mibs 2` → base OID

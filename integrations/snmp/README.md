@@ -50,14 +50,23 @@ Add one line to `/etc/snmp/snmpd.conf`, with the base OID that `make-mib.sh`
 printed:
 
 ```
-pass_persist 1.3.6.1.4.1.12345.1.1.1 /usr/local/bin/micrompx-monitor --host 127.0.0.1 --port 8080 pass-persist
+pass_persist 1.3.6.1.4.1.12345.1.1.1 /usr/local/bin/micrompx-monitor --host 127.0.0.1 --port 8080 pass-persist --oid-base 1.3.6.1.4.1.12345.1.1.1
 ```
+
+`--oid-base` must name the same OID as the first field, and it belongs to the
+`pass-persist` command, so it goes *after* that word. A leading dot is
+accepted as well (`--oid-base .1.3.6.1.4.1.12345.1.1.1`), so you can copy the
+OID exactly as `snmpd` writes it. Leave it out and the bridge answers `NONE`
+for everything.
 
 Then restart the daemon:
 
 ```bash
 sudo systemctl restart snmpd
 ```
+
+Restart, do not reload: on net-snmp 5.9 (Debian 12) a `SIGHUP` reload with a
+`pass_persist` line in the configuration crashed `snmpd` with a segfault.
 
 `snmpd` starts the bridge once and keeps it running; it only re-reads the
 decoder when something asks for a value. A snapshot is reused for 10 seconds

@@ -162,7 +162,7 @@ with correct types — SNMPv2c or SNMPv3, with all of `snmpd`'s access control:
 
 ```bash
 ./integrations/snmp/make-mib.sh <YOUR-PEN> /usr/share/snmp/mibs   # writes MICROMPX-MIB.txt
-echo 'pass_persist 1.3.6.1.4.1.<YOUR-PEN>.1.1.1 /usr/local/bin/micrompx-monitor --port 8080 pass-persist' | sudo tee -a /etc/snmp/snmpd.conf
+echo 'pass_persist 1.3.6.1.4.1.<YOUR-PEN>.1.1.1 /usr/local/bin/micrompx-monitor --port 8080 pass-persist --oid-base 1.3.6.1.4.1.<YOUR-PEN>.1.1.1' | sudo tee -a /etc/snmp/snmpd.conf
 sudo systemctl restart snmpd
 snmpwalk -v2c -c public localhost MICROMPX-MIB::microMPXDecoder
 ```

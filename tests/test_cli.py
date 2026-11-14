@@ -396,3 +396,30 @@ def test_snmp_backup_active_is_true_when_playing(mm, unit, address):
 def test_oid_ordering_is_numeric(mm):
     assert mm._oid_gt("1.3.6.1.4.1.9.1.1.1.10.0", "1.3.6.1.4.1.9.1.1.1.9.0") is True
     assert mm._oid_gt("1.3.6.1.4.1.9.1.1.1.2.0", "1.3.6.1.4.1.9.1.1.1.10.0") is False
+
+
+def test_oid_base_is_normalised(mm):
+    """The dotted form snmpd writes must give the same table as the bare one."""
+    args = mm.build_parser().parse_args(
+        ["pass-persist", "--oid-base", " .1.3.6.1.4.1.53021.2.1.1.1 "]
+    )
+    assert mm.snmp_oid(args, "10") == "1.3.6.1.4.1.53021.2.1.1.1.10.0"
+
+
+def test_pass_persist_accepts_the_snmpd_oid_base_with_a_leading_dot(
+    mm, unit, address, monkeypatch, capsys
+):
+    """Copying the OID out of snmpd.conf used to produce an empty subtree."""
+    host, port = address
+    base = ".1.3.6.1.4.1.53021.2.1.1.1"
+    monkeypatch.setattr(
+        mm.sys, "stdin", io.StringIO("get\n%s.2.0\ngetnext\n%s\n" % (base, base))
+    )
+    code = run(
+        mm, "--host", host, "--port", str(port), "--timeout", "2",
+        "pass-persist", "--oid-base", base,
+    )
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    assert lines[0:3] == [base[1:] + ".2.0", "gauge", "360"]  # 3.59658 %
+    assert lines[3:6] == [base[1:] + ".1.0", "integer", "1"]  # status: up
