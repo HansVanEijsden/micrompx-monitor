@@ -44,13 +44,15 @@
   something could not be read (existing keys unchanged).
 - `pass-persist` drains a `set` request (type and value lines) and answers
   `not-writable`, so a read-only MIB cannot desynchronise the protocol.
-- `snmp_values` reports `status` 2 when the unit is unreachable, including
-  when only some widgets answered.
+- `snmp_values` reports `status` 2 when nothing could be read, so an
+  unreachable unit shows `down(2)` in the MIB instead of a stale `up(1)`. A
+  partial answer stays `up(1)`; the scalars it lost read 0, as before.
 - A closed pipe (`... | head`) no longer prints a traceback.
 - Tests: 86 cases covering the transport, batching and its truncation
   fallback, value conversion, all three output formats, argument validation,
   exit codes and the `pass_persist` protocol, against a fake unit that speaks
-  the real JSON interface over HTTP.
+  the real JSON interface over HTTP. The suite runs in CI on every push and
+  pull request (Python 3.9, 3.11 and 3.13).
 - Confirmed on **MicroMPX Decoder 5.0.7** (both of the author's decoders now
   run it): all nine widget ids are unchanged from 5.0.0 and 5.0.2.
 - New [docs/stereotool.md](docs/stereotool.md): the encoder side of Thimeo
