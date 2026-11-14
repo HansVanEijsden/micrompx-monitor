@@ -264,7 +264,7 @@ no dependencies beyond `pytest`):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install pytest
-.venv/bin/python -m pytest          # 86 tests, no network, no decoder needed
+.venv/bin/python -m pytest          # 88 tests, no network, no decoder needed
 ```
 
 `tests/conftest.py` starts a fake MicroMPX unit on an ephemeral port. It speaks
