@@ -272,6 +272,10 @@ the same JSON interface — including the silent batch truncation — so the
 transport, the batching, the Prometheus exposition and the `pass_persist`
 protocol are all exercised over real HTTP.
 
+The same suite runs in CI on every push and pull request
+([.github/workflows/tests.yml](.github/workflows/tests.yml), Python 3.9, 3.11
+and 3.13).
+
 ## Disclaimer
 
 Not affiliated with Thimeo Audio Technology. MicroMPX and Stereo Tool are
