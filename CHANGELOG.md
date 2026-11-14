@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `make-mib.sh` accepts an optional third argument (a sub-identifier) so the
+  MIB can live under an existing enterprise number, for example
+  `./make-mib.sh 53021 /usr/share/snmp/mibs 2` → base OID
+  `1.3.6.1.4.1.53021.2.1.1.1`. That is what you need when the PEN already
+  carries another device tree, such as an encoder group under `PEN.1`.
+
 ## 1.2.0 — 2026-11-14
 
 - **Fixed: a failed read crashed `watch` and `pass-persist`.** Both commands

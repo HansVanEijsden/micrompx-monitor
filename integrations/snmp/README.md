@@ -25,6 +25,15 @@ The MIB lives under a private enterprise number (PEN). Get one for free at
 # agent-side base OID: 1.3.6.1.4.1.12345.1.1.1
 ```
 
+If the enterprise number already carries another device tree — an encoder
+bridge under `PEN.1`, for example — give a third argument to place this tree
+one level deeper, so the two cannot overlap:
+
+```bash
+./make-mib.sh 12345 /usr/share/snmp/mibs 2
+# agent-side base OID: 1.3.6.1.4.1.12345.2.1.1.1
+```
+
 Without arguments `make-mib.sh` leaves the placeholder `99999` in place —
 fine for testing, but do not publish values under someone else's number.
 

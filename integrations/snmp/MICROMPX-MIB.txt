@@ -9,11 +9,16 @@ MICROMPX-MIB DEFINITIONS ::= BEGIN
 -- enterprise number (PEN) at https://pen.iana.org (free), then run:
 --
 --     ./make-mib.sh <YOUR-PEN>
+--     ./make-mib.sh <YOUR-PEN> <mib-dir> <sub>   (tree under PEN.<sub>)
 --
--- and start the agent-side bridge with the matching base OID:
+-- The optional sub-identifier is for a PEN that already carries another
+-- device tree, for example an encoder group under PEN.1.
+--
+-- Start the agent-side bridge with the matching base OID:
 --
 --     micrompx-monitor pass-persist with the oid-base flag set to
 --     1.3.6.1.4.1.<YOUR-PEN>.1.1.1
+--     (or 1.3.6.1.4.1.<YOUR-PEN>.<sub>.1.1.1)
 
 IMPORTS
     MODULE-IDENTITY, OBJECT-TYPE, enterprises, Gauge32, Integer32
