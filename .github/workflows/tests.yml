@@ -11,7 +11,9 @@ permissions:
 jobs:
   pytest:
     name: pytest (python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: setup-python only provides builds for the
+    # images it knows (3.9 has no build for a brand-new ubuntu release).
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
