@@ -49,6 +49,13 @@ Write to a temporary file and rename, so node_exporter never reads a partially
 written file. If the decoder is unreachable the script exits non-zero and the
 file simply stays at its previous content — add an alert on
 `time() - micrompx_up` or use the `micrompx_up` metric with a staleness rule.
+Running it by hand against a dead unit prints `micrompx_up … 0` and exits 1,
+which is the same statement in the other direction.
+
+A *partial* scrape (one widget refused, the rest readable) still exits 0 and
+still writes the file: the missing series is simply absent, which Prometheus
+shows as a gap. The names of the metrics that could not be read go to stderr,
+so they end up in the journal of the timer above.
 
 ## Alert examples
 

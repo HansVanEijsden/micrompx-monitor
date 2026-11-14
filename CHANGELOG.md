@@ -1,8 +1,57 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-11-14
 
-- Verified against **MicroMPX Decoder 5.0.7** (both of the author's decoders now
+- **Fixed: a failed read crashed `watch` and `pass-persist`.** Both commands
+  called the collector without the `--strict` option that only `values` has,
+  so the first unreadable widget raised
+  `AttributeError: 'Namespace' object has no attribute 'strict'` instead of
+  reporting the failure. `watch` died with a traceback and the `snmpd` agent
+  exited mid-walk; a decoder that drops off the network is exactly when that
+  happened.
+- **Fixed: `micrompx_up` said 1 for a unit that never answered.** A scrape
+  against an unreachable decoder printed `micrompx_up … 1` and exited 0, so
+  nothing alerted and the textfile collector overwrote good metrics with
+  empty ones. A scrape that reads nothing now prints `up 0`, names the reason
+  on stderr and exits 1; a partial scrape exits 0 and names the metrics it
+  lost.
+- **Fixed: option values were only accepted before the command.** `values
+  --host 10.0.0.24` failed with "unrecognized arguments"; the connection
+  options are now on every subcommand as well.
+- **Fixed: port, timeout, batch size and the `discover` range were
+  unvalidated.** `--port 70000` and `--timeout -1` produced tracebacks (or a
+  silent all-dashes answer), `discover --from 500 --to 400` reported "0
+  widgets" instead of an error, and `watch --interval 0` hammered the unit.
+  All four are usage errors (exit 2) or rejected ranges now.
+- **Fixed: IPv6 addresses were mangled.** `--host ::1` became
+  `http://::1:8080/` and read nothing at all; literals are bracketed, and a
+  `host:port` typo or a URL given as `--host` is named instead of silently
+  failing.
+- **Batched reads.** One request per 8 widget ids instead of one per id: a
+  `values` run is two requests instead of nine, a 64-id `discover` sweep is
+  eight instead of 64. Ids an answer did not contain (the firmware parser
+  truncates large batches without saying so) are re-read individually, so a
+  batch can never lose a metric. `--batch` 1–32.
+- **Fixed: Prometheus label escaping was inconsistent.** `version` and
+  `rist_source` escaped only the quote, so a backslash or a newline in a unit
+  description split a sample line and broke the whole scrape. One escaper now
+  covers backslash, quote, newline, CR and tab for every label value, plus
+  `# HELP` escaping.
+- **Fixed: a payload that was not a JSON object crashed the reader** with
+  `AttributeError: 'str' object has no attribute 'get'`; it is now a named
+  error.
+- `--format json` gained `readable` and `total`, and an `errors` object when
+  something could not be read (existing keys unchanged).
+- `pass-persist` drains a `set` request (type and value lines) and answers
+  `not-writable`, so a read-only MIB cannot desynchronise the protocol.
+- `snmp_values` reports `status` 2 when the unit is unreachable, including
+  when only some widgets answered.
+- A closed pipe (`... | head`) no longer prints a traceback.
+- Tests: 86 cases covering the transport, batching and its truncation
+  fallback, value conversion, all three output formats, argument validation,
+  exit codes and the `pass_persist` protocol, against a fake unit that speaks
+  the real JSON interface over HTTP.
+- Confirmed on **MicroMPX Decoder 5.0.7** (both of the author's decoders now
   run it): all nine widget ids are unchanged from 5.0.0 and 5.0.2.
 - New [docs/stereotool.md](docs/stereotool.md): the encoder side of Thimeo
   Stereo Tool uses the same JSON interface. Input level (2612), output level

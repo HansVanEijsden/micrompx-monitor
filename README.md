@@ -82,19 +82,34 @@ micrompx-monitor --host 10.0.0.24 --port 8080 widget 23185 --format value
 micrompx-monitor --host 10.0.0.24 --port 8080 watch --interval 2
 ```
 
-Options that apply to every command:
+Options that apply to every command (before or after the command word — both
+`--host 10.0.0.24 values` and `values --host 10.0.0.24` work):
 
 | option | default | meaning |
 |---|---|---|
-| `--host` | `127.0.0.1` | address of the unit |
-| `--port` | `8080` | port of the web interface (see below) |
+| `--host` | `127.0.0.1` | address of the unit; IPv6 as `::1` or `[::1]` |
+| `--port` | `8080` | port of the web interface, 1–65535 (see below) |
 | `--token` | empty | JSON token, if you enabled one in the GUI |
-| `--timeout` | `5` | socket timeout in seconds |
+| `--timeout` | `5` | socket timeout in seconds, greater than 0 |
+| `--batch` | `8` | widget ids per request, 1–32 (see [How it works](#how-it-works)) |
 
 **The port differs between products and versions.** Encoders usually serve the
 web interface on 8080; decoders often use **80**. If a connection is refused,
 try the other one. `curl -s http://HOST/ | head -c 100` tells you quickly
 whether something answers.
+
+### Exit codes
+
+| code | meaning |
+|---|---|
+| `0` | at least one value was read — a partial answer still counts as success |
+| `1` | nothing could be read: the unit is unreachable or answered nothing useful |
+| `2` | usage error, or a read failed under `--strict` |
+
+A scrape that reads nothing prints `micrompx_up … 0` and exits `1`, so a
+textfile collector keeps its previous file instead of writing an empty one.
+Every metric that could not be read is named on stderr; `--strict` turns any
+single failed metric into exit code 2.
 
 ## Integrations
 
@@ -186,6 +201,16 @@ a value. That is how the ids in this repository were found — and how you can
 find newly added ones. More background, including what is *not* reachable, is
 in [docs/json-api.md](docs/json-api.md).
 
+### Batches
+
+The parser inside MicroMPX is hand-written and small, so every request costs
+the unit real work. The tool therefore asks for several ids at once: a
+`values` run is **two** requests instead of nine, and a `discover` sweep of 64
+ids is eight instead of 64. Because large batches are silently truncated by
+that parser, every id the answer did not contain is re-read on its own — a
+shortened batch can never lose a metric. `--batch` (1–32) sets the size when a
+firmware turns out to be pickier than 8.
+
 ## Alerting suggestions
 
 Reasonable starting points, adjust to your link:
@@ -231,6 +256,21 @@ refuses — the same limitation as on the decoder.
 Issues and pull requests are welcome — especially the widget ids of other
 MicroMPX versions, other metric suggestions, and translations of the docs.
 Please do not paste license keys, tokens or customer addresses in an issue.
+
+### Tests
+
+The tool is one file, and the tests load it as a module (no packaging step,
+no dependencies beyond `pytest`):
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install pytest
+.venv/bin/python -m pytest          # 86 tests, no network, no decoder needed
+```
+
+`tests/conftest.py` starts a fake MicroMPX unit on an ephemeral port. It speaks
+the same JSON interface — including the silent batch truncation — so the
+transport, the batching, the Prometheus exposition and the `pass_persist`
+protocol are all exercised over real HTTP.
 
 ## Disclaimer
 
